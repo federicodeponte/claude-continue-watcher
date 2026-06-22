@@ -1,6 +1,6 @@
 ---
 name: claude-continue-watcher
-description: 'Auto-recover Claude Code CLI sessions from transient API rate-limit / overload errors (API Error temporarily limiting requests, 529 Overloaded) by detecting the idle error banner and sending continue every few seconds until the API recovers. Use when asked to auto-continue, auto-retry, babysit, or unstick Claude Code sessions that keep hitting rate limits or 529s. Works on macOS (iTerm2) and Linux (tmux).'
+description: 'Auto-recover Claude Code CLI sessions from transient API rate-limit / overload errors (API Error temporarily limiting requests, 529 Overloaded) by detecting the idle error banner and sending continue every few seconds until the API recovers. Use when asked to auto-continue, auto-retry, babysit, or unstick Claude Code sessions that keep hitting rate limits or 529s. Cross-platform via tmux (Linux, macOS, Windows WSL), plus native iTerm2 on macOS.'
 ---
 
 # claude-continue-watcher
@@ -26,19 +26,32 @@ Then it sends `continue` + Enter and re-checks every `INTERVAL` seconds (default
 re-fires once the session is idle-errored again. Real usage-limit errors, auth
 errors, and prose never trigger it.
 
+## Platforms
+
+The watcher needs to read a session's live screen and inject keystrokes. Two
+backends provide that:
+
+- **tmux** — the cross-platform path. Works on **Linux, macOS, and Windows
+  (WSL)**. Run your Claude Code sessions inside tmux.
+- **iTerm2** — macOS convenience when you are not using tmux.
+
+`install.sh` auto-picks tmux if a tmux server is running, otherwise iTerm2 on
+macOS. Force a backend with `WATCHER=tmux` or `WATCHER=iterm`.
+
+Not supported: macOS **Apple Terminal** (weak automation API — use tmux
+instead) and **native Windows** terminals without WSL (no buffer-read API).
+
 ## Install
 
 ```bash
-# macOS (iTerm2 + launchd) or Linux (tmux + systemd --user)
-bash install.sh
+bash install.sh                # auto-detect backend + service manager
+WATCHER=tmux bash install.sh   # force tmux (Linux / macOS / WSL)
 ```
 
-On macOS the first run triggers a one-time Automation consent prompt
-("bash wants to control iTerm") — approve it under
+Service manager: launchd on macOS, systemd --user on Linux (nohup fallback).
+With the iTerm2 backend, the first run triggers a one-time macOS Automation
+consent prompt ("bash wants to control iTerm") — approve it under
 System Settings > Privacy & Security > Automation.
-
-Requirements: macOS needs **iTerm2** (Apple Terminal is not supported).
-Linux needs **tmux** (run your Claude sessions inside tmux).
 
 ## Use / manage
 
