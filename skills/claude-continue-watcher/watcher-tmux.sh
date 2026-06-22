@@ -27,6 +27,9 @@
 
 set -uo pipefail
 
+# systemd/cron may not export HOME; derive it safely before using it.
+: "${HOME:=$(cd ~ 2>/dev/null && pwd || echo /root)}"
+
 INTERVAL="${INTERVAL:-15}"
 DRY_RUN="${DRY_RUN:-0}"
 TAIL_LINES="${TAIL_LINES:-30}"
