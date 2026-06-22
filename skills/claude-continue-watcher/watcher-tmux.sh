@@ -32,7 +32,7 @@ DRY_RUN="${DRY_RUN:-0}"
 TAIL_LINES="${TAIL_LINES:-30}"
 PAUSE_FILE="${PAUSE_FILE:-$HOME/.claude/claude-watcher.pause}"
 SKIP_PATTERN="${SKIP_PATTERN:-}"
-TRANSIENT='temporarily limiting requests|Overloaded|overloaded_error|529|server-side issue'
+TRANSIENT='temporarily limiting requests|Overloaded|overloaded_error|Error: 529|server-side issue'
 CLAUDE_UI='shift\+tab to cycle|\? for shortcuts'
 
 log() { printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"; }

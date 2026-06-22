@@ -57,7 +57,7 @@ tell application "iTerm2"
         end repeat
         set isClaude to (tailTxt contains "shift+tab to cycle") or (tailTxt contains "? for shortcuts")
         set hasBanner to (tailTxt contains "API Error:")
-        set isTransient to (tailTxt contains "temporarily limiting requests") or (tailTxt contains "Overloaded") or (tailTxt contains "overloaded_error") or (tailTxt contains "529") or (tailTxt contains "server-side issue")
+        set isTransient to (tailTxt contains "temporarily limiting requests") or (tailTxt contains "Overloaded") or (tailTxt contains "overloaded_error") or (tailTxt contains "Error: 529") or (tailTxt contains "server-side issue")
         set isBusy to (tailTxt contains "esc to interrupt")
         if isClaude and hasBanner and isTransient and (not isBusy) then
           if "$DRY_RUN" is "0" then

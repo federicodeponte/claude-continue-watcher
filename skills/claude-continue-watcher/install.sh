@@ -5,7 +5,8 @@
 #   Linux  -> tmux watcher, kept alive by a systemd --user service (or nohup)
 #
 # Idempotent: re-running re-installs and restarts cleanly.
-# Env: INTERVAL (default 15s).  Use DRY_RUN=1 ./install.sh to install paused.
+# Env: INTERVAL (integer seconds, default 15).
+# To pause after install: touch ~/.claude/claude-watcher.pause
 
 set -euo pipefail
 
