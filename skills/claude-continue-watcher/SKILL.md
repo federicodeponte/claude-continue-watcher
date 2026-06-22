@@ -1,6 +1,6 @@
 ---
 name: claude-continue-watcher
-description: Auto-recover Claude Code CLI sessions from transient API rate-limit / overload errors ("API Error: Server is temporarily limiting requests", "529 Overloaded") by detecting the idle error banner and sending "continue" every few seconds until the API recovers. Use when asked to auto-continue, auto-retry, babysit, or unstick Claude Code sessions that keep hitting rate limits or 529s. Works on macOS (iTerm2) and Linux (tmux).
+description: 'Auto-recover Claude Code CLI sessions from transient API rate-limit / overload errors (API Error temporarily limiting requests, 529 Overloaded) by detecting the idle error banner and sending continue every few seconds until the API recovers. Use when asked to auto-continue, auto-retry, babysit, or unstick Claude Code sessions that keep hitting rate limits or 529s. Works on macOS (iTerm2) and Linux (tmux).'
 ---
 
 # claude-continue-watcher
