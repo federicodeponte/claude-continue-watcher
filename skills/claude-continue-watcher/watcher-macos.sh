@@ -1,177 +1,132 @@
 #!/usr/bin/env bash
-# claude-continue-watcher.sh  (macOS / iTerm2 + Terminal.app)
+# claude-continue-watcher.sh  (macOS / iTerm2 + Terminal.app)  — v2 detector
 #
-# Watches every iTerm2 AND Apple Terminal session for a transient Claude Code
-# API error banner ("API Error: ... temporarily limiting requests", "529
-# Overloaded", ...) and, when an idle Claude session is showing such an error,
-# types "continue" and presses Return. Re-checks every INTERVAL seconds.
+# Watches every iTerm2 and Apple Terminal session and types "continue" into a
+# Claude Code session that has STALLED on a transient API error or hit its
+# 5h/weekly usage cap. v2 uses POSITIONAL detection (see decide_pane): it acts
+# only when the rendered error banner is the turn-result line right above an
+# idle input prompt, and never while Claude is generating — so it resumes a
+# session stuck behind a background shell, yet never fires on a session that is
+# merely displaying the words (e.g. a chat about rate limits) or working.
 #
-# A session is acted on ONLY when ALL hold (in the live tail, last TAIL_LINES):
-#   1. Claude UI chrome present  (footer "shift+tab to cycle" / "Context..Usage")
-#   2. NOT busy                  ("esc to interrupt" absent)
-#   3. The literal "API Error:" banner present
-#   4. A transient keyword present (retry-able errors only)
-#
-# Kill switch:
-#   - touch $PAUSE_FILE  -> watcher pauses (keeps looping, sends nothing)
-#   - DRY_RUN=1          -> log intended sends without sending
+# Cadences: transient errors every INTERVAL (15s); usage cap every
+# USAGE_INTERVAL (600s = 10 min).  Kill switch: touch $PAUSE_FILE.  DRY_RUN=1
+# logs intended sends.
 
 set -uo pipefail
-
-# launchd/cron may not export HOME; derive it safely before using it.
 : "${HOME:=$(cd ~ 2>/dev/null && pwd || echo /tmp)}"
 
 INTERVAL="${INTERVAL:-15}"
+USAGE_INTERVAL="${USAGE_INTERVAL:-600}"
 DRY_RUN="${DRY_RUN:-0}"
-TAIL_LINES="${TAIL_LINES:-30}"
 PAUSE_FILE="${PAUSE_FILE:-$HOME/.claude/claude-watcher.pause}"
 
 log() { printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"; }
 
-# --- iTerm2: read via `contents of session`, send via `write text` -----------
-scan_iterm() {
-  osascript <<OSA 2>/dev/null
-if not (application "iTerm2" is running) then return ""
-tell application "iTerm2"
-  set acted to ""
-  repeat with w in windows
-    repeat with t in tabs of w
-      repeat with s in sessions of t
-        set txt to ""
-        try
-          set txt to contents of s
-        end try
-        set para to paragraphs of txt
-        set cnt to (count of para)
-        set startIdx to cnt - $TAIL_LINES
-        if startIdx < 1 then set startIdx to 1
-        set tailTxt to ""
-        repeat with i from startIdx to cnt
-          set tailTxt to tailTxt & (item i of para) & linefeed
-        end repeat
-        set isClaude to (tailTxt contains "shift+tab to cycle") or (tailTxt contains "for shortcuts") or (tailTxt contains "⏵⏵") or (tailTxt contains "for agents") or (tailTxt contains "context used") or ((tailTxt contains "Context") and (tailTxt contains "Usage"))
-        set hasBanner to (tailTxt contains "API Error:")
-        set isTransient to (tailTxt contains "temporarily limiting requests") or (tailTxt contains "Overloaded") or (tailTxt contains "overloaded_error") or (tailTxt contains "Error: 529") or (tailTxt contains "server-side issue")
-        set isBusy to (tailTxt contains "esc to interrupt")
-        set isUsage to (tailTxt contains "hit your") and (tailTxt contains "limit") and (tailTxt contains "resets")
-        if isClaude and (not isBusy) and ((hasBanner and isTransient) or (("$DO_USAGE" is "1") and isUsage)) then
-          if "$DRY_RUN" is "0" then
-            tell s to write text "continue"
-          end if
-          set acted to acted & "iterm:" & (id of s) & linefeed
-        end if
-      end repeat
-    end repeat
-  end repeat
-  return acted
-end tell
-OSA
+# --- decide_pane: stdin = pane text; stdout = "transient" | "usage" | "" ------
+decide_pane() {
+  awk '
+  { L[NR]=$0 }
+  END {
+    n=NR; if (n==0) { print ""; exit }
+    isclaude=0
+    for (i=1;i<=n;i++) if (L[i] ~ /shift\+tab to cycle|⏵⏵|for agents|context used/ || (L[i] ~ /Context/ && L[i] ~ /Usage/)) isclaude=1
+    if (!isclaude) { print ""; exit }
+    for (i=1;i<=n;i++) { l=L[i]
+      if (l ~ /ing… \(/ || l ~ /↓ [0-9.]+k? tokens/ || l ~ /⎿ +Running…/) { print ""; exit } }
+    promptidx=0
+    for (i=n;i>=1;i--) { t=L[i]; gsub(/^[ \t]+|[ \t]+$/,"",t)
+      if (t=="❯" || t=="›" || t=="> " || t==">") { promptidx=i; break } }
+    if (promptidx==0) { print ""; exit }
+    c1=""; c0=""; got=0
+    for (i=promptidx-1; i>=1; i--) { t=L[i]; gsub(/^[ \t]+|[ \t]+$/,"",t)
+      if (t=="" || t ~ /^[-─—_]+$/ || t ~ /^✻/) continue
+      if (got==0) { c1=t; got=1; continue }
+      c0=t; break }
+    if (got==0) { print ""; exit }
+    h1=c1; sub(/^⏺[ \t]*/,"",h1); h0=c0; sub(/^⏺[ \t]*/,"",h0)
+    tk="temporarily limiting requests|Overloaded|overloaded_error|Error: 529|server-side issue|Rate limited"
+    if (h1 ~ /^API Error:/ && h1 ~ tk) { print "transient"; exit }
+    if (length(h1) < 40 && h1 ~ /^(Rate limited|529 Overloaded|Overloaded|server-side issue)/ && h0 ~ /^API Error:/) { print "transient"; exit }
+    if (h1 ~ /hit your/ && h1 ~ /limit/ && h1 ~ /resets/) { print "usage"; exit }
+    print ""
+  }'
 }
 
-# --- Apple Terminal: read via `contents of tab`, send via `do script ... in tab`
-scan_terminal() {
-  osascript <<OSA 2>/dev/null
-if not (application "Terminal" is running) then return ""
-tell application "Terminal"
-  set acted to ""
-  repeat with wi from 1 to (count of windows)
-    set w to window wi
-    repeat with ti from 1 to (count of tabs of w)
-      set txt to ""
-      try
-        set txt to (contents of tab ti of w)
-      end try
-      set para to paragraphs of txt
-      set cnt to (count of para)
-      set startIdx to cnt - $TAIL_LINES
-      if startIdx < 1 then set startIdx to 1
-      set tailTxt to ""
-      repeat with i from startIdx to cnt
-        set tailTxt to tailTxt & (item i of para) & linefeed
-      end repeat
-      set isClaude to (tailTxt contains "shift+tab to cycle") or (tailTxt contains "for shortcuts") or (tailTxt contains "⏵⏵") or (tailTxt contains "for agents") or (tailTxt contains "context used") or ((tailTxt contains "Context") and (tailTxt contains "Usage"))
-      set hasBanner to (tailTxt contains "API Error:")
-      set isTransient to (tailTxt contains "temporarily limiting requests") or (tailTxt contains "Overloaded") or (tailTxt contains "overloaded_error") or (tailTxt contains "Error: 529") or (tailTxt contains "server-side issue")
-      set isBusy to (tailTxt contains "esc to interrupt")
-      set isUsage to (tailTxt contains "hit your") and (tailTxt contains "limit") and (tailTxt contains "resets")
-      if isClaude and (not isBusy) and ((hasBanner and isTransient) or (("$DO_USAGE" is "1") and isUsage)) then
-        if "$DRY_RUN" is "0" then
-          do script "continue" in tab ti of w
-        end if
-        set acted to acted & "terminal:" & wi & "." & ti & linefeed
-      end if
-    end repeat
-  end repeat
-  return acted
-end tell
-OSA
-}
-
-report() {
-  local out="$1"
-  [ -z "${out//[$'\n ']/}" ] && return 0
-  while IFS= read -r tgt; do
-    [ -z "$tgt" ] && continue
-    if [ "$DRY_RUN" = "0" ]; then
-      log "transient API error detected -> sent 'continue' to $tgt"
-    else
-      log "[DRY_RUN] would send 'continue' to $tgt"
-    fi
-  done <<< "$out"
-}
-
-reachability() {
+# --- dump every session: marker line "%%CCW%% <app> <id>" then its contents --
+dump_sessions() {
   osascript <<'OSA' 2>/dev/null
-set itc to "n/a"
-set tm to "n/a"
+set out to ""
 try
-  set itRun to (application "iTerm2" is running)
-  if itRun then
+  if application "iTerm2" is running then
     tell application "iTerm2"
-      set c to 0
       repeat with w in windows
         repeat with t in tabs of w
           repeat with s in sessions of t
-            set c to c + 1
+            set txt to ""
+            try
+              set txt to contents of s
+            end try
+            set out to out & "%%CCW%% iterm " & (id of s) & linefeed & txt & linefeed
           end repeat
         end repeat
       end repeat
-      set itc to (c as string)
     end tell
-  else
-    set itc to "not running"
   end if
 end try
 try
-  set tmRun to (application "Terminal" is running)
-  if tmRun then
+  if application "Terminal" is running then
     tell application "Terminal"
-      set c to 0
       repeat with wi from 1 to (count of windows)
-        set c to c + (count of tabs of window wi)
+        repeat with ti from 1 to (count of tabs of window wi)
+          set txt to ""
+          try
+            set txt to (contents of tab ti of window wi)
+          end try
+          set out to out & "%%CCW%% terminal " & wi & "." & ti & linefeed & txt & linefeed
+        end repeat
       end repeat
-      set tm to (c as string)
     end tell
-  else
-    set tm to "not running"
   end if
 end try
-return "iterm=" & itc & " terminal=" & tm
+return out
 OSA
 }
 
-USAGE_INTERVAL="${USAGE_INTERVAL:-600}"   # 10 min: cadence for the 5h/weekly usage-limit "continue"
-last_usage=0
-DO_USAGE=0
+send_iterm()    { osascript -e "tell application \"iTerm2\" to repeat with w in windows" -e "repeat with t in tabs of w" -e "repeat with s in sessions of t" -e "if (id of s) is \"$1\" then tell s to write text \"continue\"" -e "end repeat" -e "end repeat" -e "end repeat" 2>/dev/null; }
+send_terminal() { local wi="${1%%.*}" ti="${1##*.}"; osascript -e "tell application \"Terminal\" to do script \"continue\" in tab $ti of window $wi" 2>/dev/null; }
 
-log "claude-continue-watcher started (iTerm2 + Terminal.app, interval=${INTERVAL}s, tail=${TAIL_LINES}, usage_interval=${USAGE_INTERVAL}s, dry_run=${DRY_RUN}, pause_file=${PAUSE_FILE})"
-log "reachability: $(reachability)  (terminal=0 while sessions exist => grant 'Terminal' Automation to the watcher)"
+act() { # $1=cur_id ("iterm <id>" | "terminal <w.t>")  $2=reason
+  local app="${1%% *}" tgt="${1#* }"
+  if [ "$DRY_RUN" = "0" ]; then
+    [ "$app" = "iterm" ] && send_iterm "$tgt"
+    [ "$app" = "terminal" ] && send_terminal "$tgt"
+    log "$2 detected -> sent 'continue' to $1"
+  else
+    log "[DRY_RUN] would send 'continue' to $1 ($2)"
+  fi
+}
+
+maybe_act() { # $1=cur_id  $2=cur_buf
+  local r; r="$(printf '%s' "$2" | decide_pane)"
+  if [ "$r" = "transient" ] || { [ "$r" = "usage" ] && [ "$DO_USAGE" = "1" ]; }; then act "$1" "$r"; fi
+}
+
+last_usage=0; DO_USAGE=0
+log "claude-continue-watcher started (v2, iTerm2 + Terminal.app, interval=${INTERVAL}s, usage_interval=${USAGE_INTERVAL}s, dry_run=${DRY_RUN})"
 while true; do
   if [ -f "$PAUSE_FILE" ]; then sleep "$INTERVAL"; continue; fi
-  now="$(date +%s)"
-  DO_USAGE=0
+  now="$(date +%s)"; DO_USAGE=0
   if [ "$(( now - last_usage ))" -ge "$USAGE_INTERVAL" ]; then DO_USAGE=1; last_usage="$now"; fi
-  report "$(scan_iterm)"
-  report "$(scan_terminal)"
+  cur_id=""; cur_buf=""
+  while IFS= read -r line; do
+    if [[ "$line" == "%%CCW%% "* ]]; then
+      [ -n "$cur_id" ] && maybe_act "$cur_id" "$cur_buf"
+      cur_id="${line#%%CCW%% }"; cur_buf=""
+    else
+      cur_buf+="$line"$'\n'
+    fi
+  done < <(dump_sessions)
+  [ -n "$cur_id" ] && maybe_act "$cur_id" "$cur_buf"
   sleep "$INTERVAL"
 done
